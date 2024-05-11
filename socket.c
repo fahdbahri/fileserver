@@ -11,6 +11,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+// functions for commands
+void parse_command(char *command, char *username, char *password, char *buffer);
+void user_command(const char *passwordFile, char *username, char *password, char *response);
+void list_users_command(const char *directory, char *response);
+
 /* Definitions */
 #define DEFAULT_BUFLEN 512
 #define PORT 4529
@@ -21,15 +26,16 @@ int main(int argc, char *argv[])
     struct sockaddr_in local_addr;
     struct sockaddr_in remote_addr;
     int length, fd, rcnt, optval;
-    char recvbuf[DEFAULT_BUFLEN], bmsg[DEFAULT_BUFLEN];
-    int recvbuflen = DEFAULT_BUFLEN;
+    char buffer[DEFAULT_BUFLEN];
+    int bufferlen = DEFAULT_BUFLEN;
 
     // assigning option,  port, password and directory
     unsigned short port = 0;
-    char *password = NULL;
+    char *passwordFile = NULL;
     char *directory = NULL;
     int option;
 
+    // Parse commmand-line arguments
     while ((option = getopt(argc, argv, "p:d:w:")) != -1)
     {
         switch (option)
@@ -38,10 +44,10 @@ int main(int argc, char *argv[])
             port = atoi(optarg);
             break;
         case 'd':
-            directory = strdup(optarg);
+            directory = optarg;
             break;
         case 'w':
-            password = strdup(optarg);
+            passwordFile = optarg;
             break;
         default:
             fprintf(stderr, "usage: %s -p port_number -d directory_name -w password\n", argv[0]);
@@ -49,47 +55,12 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (port == 0 || directory == NULL || password == NULL)
+    // Validate command-line arguments
+    if (port == 0 || directory == NULL || passwordFile == NULL)
     {
         fprintf(stderr, "usage: %s -p port_number -d directory_name -w password\n", argv[0]);
         exit(EXIT_FAILURE);
     }
-
-    // Access the specified directory
-    DIR *dir = opendir(directory);
-    if (!dir)
-    {
-        perror("Error opening a directory");
-        exit(EXIT_FAILURE);
-    }
-    // Read directory contents
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL)
-    {
-        printf("%s\n", entry->d_name);
-    }
-
-    closedir(dir);
-
-    FILE *file;
-    file = fopen(password, "r");
-    char line[100];
-
-    if(file == NULL)
-    {
-        printf("The file is not opened.\n");
-        exit(0);
-    }
-
-    while(fgets(line, sizeof(line), file) != NULL)
-    {
-        char *username = strtok(line, ":");
-        char *password = strtok(NULL, ":");
-
-        printf("Username: %s, password: %s", username, password);
-    }
-
-    fclose(file);
 
     /* Open socket descriptor */
     if ((server = socket(AF_INET, SOCK_STREAM, 0)) < 0)
@@ -99,7 +70,6 @@ int main(int argc, char *argv[])
     }
 
     /* Fill local and remote address structure with zero */
-
     memset(&local_addr, 0, sizeof(local_addr));
     memset(&remote_addr, 0, sizeof(remote_addr));
 
@@ -110,10 +80,12 @@ int main(int argc, char *argv[])
     else
         local_addr.sin_port = htons(PORT);
     local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
     // set SO_REUSEADDR on a socket to true (1):
     optval = 1;
     setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval);
 
+    // Bind the socket
     if (bind(server, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0)
     {
         /* could not start server */
@@ -121,6 +93,7 @@ int main(int argc, char *argv[])
         return (1);
     }
 
+    // Start Listening for incoming connections
     if (listen(server, SOMAXCONN) < 0)
     {
         perror("Listen");
@@ -128,13 +101,14 @@ int main(int argc, char *argv[])
     }
 
     printf("\nPort number: %d\n", ntohs(local_addr.sin_port));
-    printf("Directory: %s\n", directory);
-    printf("Password: %s\n", password);
 
     printf("Wait for connection\n");
 
+    int authenticated = 0; // Flag to track user authentication
+
     while (1)
-    { // main accept() loop
+    {
+        // Accept incoming connection
         length = sizeof remote_addr;
         if ((fd = accept(server, (struct sockaddr *)&remote_addr, &length)) == -1)
         {
@@ -149,21 +123,101 @@ int main(int argc, char *argv[])
         do
         {
             // Clear Receive buffer
-            memset(&recvbuf, '\0', sizeof(recvbuf));
-            rcnt = recv(fd, recvbuf, recvbuflen, 0);
+            memset(&buffer, '\0', sizeof(buffer));
+            rcnt = recv(fd, buffer, bufferlen, 0);
             if (rcnt > 0)
             {
-                printf("Bytes received: %d\n", rcnt);
+                // Parse the received command
+                char command[100];
+                char username[100];
+                char password[100];
+                memset(command, 0, sizeof(command));
+                memset(username, 0, sizeof(username));
+                memset(password, 0, sizeof(password));
+                parse_command(command, username, password, buffer);
 
-                // Echo the buffer back to the sender
-                rcnt = send(fd, recvbuf, rcnt, 0);
+                char response[100];
+                memset(response, 0, sizeof(response));
+
+                // Handle different commaands
+                if (strcmp(command, "USER") == 0)
+                {
+                    // Handle USER command
+                    user_command(passwordFile, username, password, response);
+                    if (strcmp(response, "200 User test granted to access.\n") == 0)
+                    {
+                        authenticated = 1;
+                    }
+                }
+                else if (strcmp(command, "LIST") == 0)
+                {
+                    // Handle LIST command
+                    if (authenticated == 1)
+                    {
+                        list_users_command(directory, response);
+                    }
+                    else
+                    {
+                        strcpy(response, "401 Unauthorized. Please authenticate first. \n");
+                    }
+                }
+                else if (strcmp(command, "GET") == 0)
+                {
+                    // handle GET command
+                    if (authenticated == 1)
+                    {
+
+                        char file_path[250];
+                        sscanf(buffer, "%*s %s", file_path);
+
+                        // open the specified file for reading
+                        FILE *file = fopen(file_path, "r");
+                        if (file == NULL)
+                        {
+                            sprintf(response, "404 File %s not found\n", file_path);
+                        }
+                        else
+                        {
+                            // reading the file content
+                            char file_content[DEFAULT_BUFLEN];
+                            size_t bytes_read = fread(file_content, 1, sizeof(file_content), file);
+                            fclose(file);
+
+                            if (bytes_read == 0)
+                            {
+                                sprintf(response, "500 Internal server error. \n");
+                            }
+                            else
+                            {
+                                // send the file to the client
+                                if (send(fd, file_content, bytes_read, 0) < 0)
+                                {
+                                    perror("Error sending the file content. ");
+                                    close(fd);
+                                    break;
+                                }
+                                else
+                                {
+                                    sprintf(response, "\n 200 OK. \n");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (send(fd, response, strlen(response), 0) < 0)
+                {
+                    perror("Error sending data");
+                    close(fd);
+                    continue;
+                }
+
                 if (rcnt < 0)
                 {
                     printf("Send failed:\n");
                     close(fd);
                     break;
                 }
-                printf("Bytes sent: %d\n", rcnt);
             }
             else if (rcnt == 0)
                 printf("Connection closing...\n");
@@ -178,4 +232,73 @@ int main(int argc, char *argv[])
 
     // Final Cleanup
     close(server);
+}
+
+void parse_command(char *command, char *username, char *password, char *buffer)
+{
+    sscanf(buffer, "%s %s %s", command, username, password);
+    printf("Command is %s, username are %s, password is %s\n", command, username, password);
+}
+
+void user_command(const char *passwordFile, char *username, char *password, char *response)
+{
+
+    // open the password File
+    FILE *file;
+    file = fopen(passwordFile, "r");
+    char line[100];
+    int user_found = 0;
+
+    if (file == NULL)
+    {
+        // handle the file error
+        sprintf(response, "The file is not opened.\n");
+        exit(0);
+    }
+
+    // Read lines from the password file
+    while (fgets(line, sizeof(line), file) != NULL)
+    {
+        char *username_file = strtok(line, ":");
+        char *password_file = strtok(NULL, ":");
+
+        if (strcmp(username_file, username) == 0 &&
+            strcmp(password_file, password) == 0)
+        {
+            // User authenticated
+            sprintf(response, "200 User test granted to access.\n");
+            user_found = 1;
+            break;
+        }
+    }
+
+    // if the user found, send unauthorized response
+    if (!user_found)
+    {
+        sprintf(response, "401 Unauthorized. Please authenticate first. \n");
+    }
+
+    fclose(file);
+}
+
+void list_users_command(const char *directory, char *response)
+{
+    // Access the specified directory
+    DIR *dir = opendir(directory);
+    if (!dir)
+    {
+        sprintf(response, "Error opening a directory");
+        exit(EXIT_FAILURE);
+    }
+
+    // Read directory contents
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL)
+    {
+        // Append directory entry names to the response
+        strcat(response, entry->d_name);
+        strcat(response, "\n");
+    }
+
+    closedir(dir);
 }
