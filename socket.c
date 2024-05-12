@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <sys/types.h>
 #include <getopt.h>
+#include <unistd.h>
 
 /* Socket API headers */
 #include <sys/socket.h>
@@ -15,6 +16,7 @@
 void parse_command(char *command, char *username, char *password, char *buffer);
 void user_command(const char *passwordFile, char *username, char *password, char *response);
 void list_users_command(const char *directory, char *response);
+void put_command(const char *directory, int client_socket);
 
 /* Definitions */
 #define DEFAULT_BUFLEN 512
@@ -36,7 +38,7 @@ int main(int argc, char *argv[])
     int option;
 
     // Parse commmand-line arguments
-    while ((option = getopt(argc, argv, "p:d:w:")) != -1)
+    while ((option = getopt(argc, argv, "d:p:u:")) != -1)
     {
         switch (option)
         {
@@ -46,11 +48,11 @@ int main(int argc, char *argv[])
         case 'd':
             directory = optarg;
             break;
-        case 'w':
+        case 'u':
             passwordFile = optarg;
             break;
         default:
-            fprintf(stderr, "usage: %s -p port_number -d directory_name -w password\n", argv[0]);
+            fprintf(stderr, "usage: %s -d directory_name -p port_number -u password\n", argv[0]);
             exit(1);
         }
     }
@@ -58,7 +60,7 @@ int main(int argc, char *argv[])
     // Validate command-line arguments
     if (port == 0 || directory == NULL || passwordFile == NULL)
     {
-        fprintf(stderr, "usage: %s -p port_number -d directory_name -w password\n", argv[0]);
+        fprintf(stderr, "usage: %s -d directory_name -p port_number -u password\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
@@ -100,7 +102,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    printf("\nPort number: %d\n", ntohs(local_addr.sin_port));
+    printf("\nFile server Listening on localhost port %d\n", ntohs(local_addr.sin_port));
 
     printf("Wait for connection\n");
 
@@ -203,6 +205,17 @@ int main(int argc, char *argv[])
                             }
                         }
                     }
+                    else
+                    {
+                        strcpy(response, "401 Unauthorized. Please authenticate first. \n");
+                    }
+                }
+                else if (strcmp(command, "PUT") == 0)
+                {
+                    if (authenticated == 1)
+                    {
+                        put_command(directory, fd);
+                    }
                 }
 
                 if (send(fd, response, strlen(response), 0) < 0)
@@ -301,4 +314,74 @@ void list_users_command(const char *directory, char *response)
     }
 
     closedir(dir);
+}
+
+void put_command(const char *directory, int client_socket)
+{
+    char buffer[DEFAULT_BUFLEN];
+    int bytes_received;
+
+    memset(buffer, 0, sizeof(buffer));
+
+    while (1)
+    {
+
+        bytes_received = recv(client_socket, buffer, sizeof(buffer), 0);
+
+        if (bytes_received < 0)
+        {
+            perror("Error receving file content from client");
+            return;
+        }
+        else
+        {
+
+            if (strstr(buffer, "\r\n.\r\n") != NULL)
+            {
+                char *termination_ptr = strstr(buffer, "\r\n.\r\n");
+                *termination_ptr = '\0';
+                bytes_received = termination_ptr - buffer;
+
+                char filename[100];
+                sscanf(buffer, "PUT %s", filename);
+                char file_path[250];
+                snprintf(file_path, sizeof(file_path), "%s/%s", directory, filename);
+
+                FILE *file = fopen(file_path, "wb");
+                if (!file)
+                {
+                    perror("Error opening file for writing");
+                    return;
+                }
+
+                size_t bytes_written = fwrite(buffer, 1, bytes_received, file);
+                fclose(file);
+
+                char response[DEFAULT_BUFLEN];
+
+                snprintf(response, sizeof(response), "%zu bytes saved, 200 OK. File recevied and saved.", bytes_received);
+                if (send(client_socket, response, strlen(response), 0) < 0)
+                {
+                    perror("Error sending response to client");
+                }
+                return;
+            }
+            else
+            {
+                char filename[100];
+                sscanf(buffer, "PUT %s", filename);
+                char file_path[250];
+                snprintf(file_path, sizeof(file_path), "%s/%s", directory, filename);
+                FILE *file = fopen(file_path, "ab");
+                if (!file)
+                {
+                    perror("Error opening file for writing");
+                    return;
+                }
+
+                size_t bytes_written = fwrite(buffer, 1, bytes_received, file);
+                fclose(file);
+            }
+        }
+    }
 }
