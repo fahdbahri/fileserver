@@ -16,7 +16,6 @@
 void parse_command(char *command, char *username, char *password, char *buffer);
 void user_command(const char *passwordFile, char *username, char *password, char *response);
 void list_users_command(const char *directory, char *response);
-void put_command(const char *directory, int client_socket);
 
 /* Definitions */
 #define DEFAULT_BUFLEN 512
@@ -214,37 +213,91 @@ int main(int argc, char *argv[])
                 {
                     if (authenticated == 1)
                     {
-                        put_command(directory, fd);
+                        char file_path[250];
+                        sscanf(buffer, "%*s %s", file_path);
+
+                        // open the specified file for reading
+
+                        if (access(file_path, F_OK) == 0)
+                        {
+                            sprintf(response, "404 File %s already exists\n", file_path);
+                        }
+                        else
+                        {
+                            FILE *file = fopen(file_path, "wb");
+                            if (file == NULL)
+                            {
+                                perror("Error opening file for writing. ");
+                                return 0;
+                            }
+
+                            while (1)
+                            {
+                                memset(buffer, 0, sizeof(buffer));
+                                size_t bytes_received = recv(fd, buffer, sizeof(buffer), 0);
+                                if (bytes_received < 0)
+                                {
+                                    perror("Error receving data");
+                                    close(fd);
+                                    fclose(file);
+                                    return 0;
+                                }
+
+                                else if (bytes_received == 0 || strcmp(buffer, ".") == 0)
+                                {
+                                    break;
+                                }
+                                else
+                                {
+                                    size_t bytes_written = fwrite(buffer, 1, bytes_received, file);
+                                    if (bytes_received > bytes_written)
+                                    {
+                                        perror("Error writing a file. ");
+                                        close(fd);
+                                        return 0;
+                                    }
+                                }
+                            }
+
+                            fclose(file);
+
+                            const char *response = "File transefer completed. \n";
+                            if (send(fd, response, strlen(response), 0) < 0)
+                            {
+                                perror("Error sending data. ");
+                                close(fd);
+                                fclose(file);
+                                return 0;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        strcpy(response, "401 Unauthorized. Please authenticate firs. ");
+                    }
+
+                    if (send(fd, response, strlen(response), 0) < 0)
+                    {
+                        perror("Error sending data");
+                        close(fd);
+                        continue;
                     }
                 }
-
-                if (send(fd, response, strlen(response), 0) < 0)
+                else if (rcnt == 0)
+                    printf("Connection closing...\n");
+                else
                 {
-                    perror("Error sending data");
-                    close(fd);
-                    continue;
-                }
-
-                if (rcnt < 0)
-                {
-                    printf("Send failed:\n");
+                    printf("Receive failed:\n");
                     close(fd);
                     break;
                 }
             }
-            else if (rcnt == 0)
-                printf("Connection closing...\n");
-            else
-            {
-                printf("Receive failed:\n");
-                close(fd);
-                break;
-            }
         } while (rcnt > 0);
     }
-
     // Final Cleanup
     close(server);
+
+    return 0;
 }
 
 void parse_command(char *command, char *username, char *password, char *buffer)
@@ -314,74 +367,4 @@ void list_users_command(const char *directory, char *response)
     }
 
     closedir(dir);
-}
-
-void put_command(const char *directory, int client_socket)
-{
-    char buffer[DEFAULT_BUFLEN];
-    int bytes_received;
-
-    memset(buffer, 0, sizeof(buffer));
-
-    while (1)
-    {
-
-        bytes_received = recv(client_socket, buffer, sizeof(buffer), 0);
-
-        if (bytes_received < 0)
-        {
-            perror("Error receving file content from client");
-            return;
-        }
-        else
-        {
-
-            if (strstr(buffer, "\r\n.\r\n") != NULL)
-            {
-                char *termination_ptr = strstr(buffer, "\r\n.\r\n");
-                *termination_ptr = '\0';
-                bytes_received = termination_ptr - buffer;
-
-                char filename[100];
-                sscanf(buffer, "PUT %s", filename);
-                char file_path[250];
-                snprintf(file_path, sizeof(file_path), "%s/%s", directory, filename);
-
-                FILE *file = fopen(file_path, "wb");
-                if (!file)
-                {
-                    perror("Error opening file for writing");
-                    return;
-                }
-
-                size_t bytes_written = fwrite(buffer, 1, bytes_received, file);
-                fclose(file);
-
-                char response[DEFAULT_BUFLEN];
-
-                snprintf(response, sizeof(response), "%zu bytes saved, 200 OK. File recevied and saved.", bytes_received);
-                if (send(client_socket, response, strlen(response), 0) < 0)
-                {
-                    perror("Error sending response to client");
-                }
-                return;
-            }
-            else
-            {
-                char filename[100];
-                sscanf(buffer, "PUT %s", filename);
-                char file_path[250];
-                snprintf(file_path, sizeof(file_path), "%s/%s", directory, filename);
-                FILE *file = fopen(file_path, "ab");
-                if (!file)
-                {
-                    perror("Error opening file for writing");
-                    return;
-                }
-
-                size_t bytes_written = fwrite(buffer, 1, bytes_received, file);
-                fclose(file);
-            }
-        }
-    }
 }
