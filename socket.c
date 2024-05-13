@@ -15,7 +15,6 @@
 // functions for commands
 void parse_command(char *command, char *username, char *password, char *buffer);
 void user_command(const char *passwordFile, char *username, char *password, char *response);
-void list_users_command(const char *directory, char *response);
 
 /* Definitions */
 #define DEFAULT_BUFLEN 512
@@ -121,9 +120,11 @@ int main(int argc, char *argv[])
                inet_ntoa(remote_addr.sin_addr));
 
         // Receive until the peer shuts down the connection
+
+        // Clear Receive buffer
+
         do
         {
-            // Clear Receive buffer
             memset(&buffer, '\0', sizeof(buffer));
             rcnt = recv(fd, buffer, bufferlen, 0);
             if (rcnt > 0)
@@ -137,7 +138,7 @@ int main(int argc, char *argv[])
                 memset(password, 0, sizeof(password));
                 parse_command(command, username, password, buffer);
 
-                char response[100];
+                char response[DEFAULT_BUFLEN];
                 memset(response, 0, sizeof(response));
 
                 // Handle different commaands
@@ -145,9 +146,24 @@ int main(int argc, char *argv[])
                 {
                     // Handle USER command
                     user_command(passwordFile, username, password, response);
-                    if (strcmp(response, "200 User test granted to access.\n") == 0)
+                    if (strcmp(response, "200") == 0)
                     {
                         authenticated = 1;
+                        if (send(fd, "200 User test granted to access.\n", strlen("200 User test granted to access.\n"), 0) < 0)
+                        {
+                            perror("Error sending data");
+                            close(fd);
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        if (send(fd, "401 Unauthorized. Please authenticate first. \n", strlen("401 Unauthorized. Please authenticate first. \n"), 0) < 0)
+                        {
+                            perror("Error sending data");
+                            close(fd);
+                            continue;
+                        }
                     }
                 }
                 else if (strcmp(command, "LIST") == 0)
@@ -155,7 +171,25 @@ int main(int argc, char *argv[])
                     // Handle LIST command
                     if (authenticated == 1)
                     {
-                        list_users_command(directory, response);
+                        // Access the specified directory
+                        DIR *dir = opendir(directory);
+                        if (!dir)
+                        {
+                            sprintf(response, "Error opening a directory");
+                            return;
+                        }
+
+                        // Read directory contents
+                        struct dirent *entry;
+                        while ((entry = readdir(dir)) != NULL)
+                        {
+                            // Append directory entry names to the response
+                            strcat(response, entry->d_name);
+                            strcat(response, "\n");
+                        }
+
+                        write(fd, response, strlen(response));
+                        closedir(dir);
                     }
                     else
                     {
@@ -211,6 +245,7 @@ int main(int argc, char *argv[])
                 }
                 else if (strcmp(command, "PUT") == 0)
                 {
+                    char response[DEFAULT_BUFLEN];
                     if (authenticated == 1)
                     {
                         char file_path[250];
@@ -261,7 +296,7 @@ int main(int argc, char *argv[])
 
                             fclose(file);
 
-                            const char *response = "File transefer completed. \n";
+                            sprintf(response, "File transfer completed. \n");
                             if (send(fd, response, strlen(response), 0) < 0)
                             {
                                 perror("Error sending data. ");
@@ -284,22 +319,21 @@ int main(int argc, char *argv[])
                     }
                 }
                 else if (rcnt == 0)
-                    printf("Connection closing...\n");
-                else
                 {
-                    printf("Receive failed:\n");
-                    close(fd);
-                    break;
+                    printf("Connection closing...\n");
                 }
+            }
+            else
+            {
+                printf("Receive failed:\n");
+                close(fd);
+                break;
             }
         } while (rcnt > 0);
     }
-    // Final Cleanup
+
     close(server);
-
-    return 0;
 }
-
 void parse_command(char *command, char *username, char *password, char *buffer)
 {
     sscanf(buffer, "%s %s %s", command, username, password);
@@ -332,7 +366,7 @@ void user_command(const char *passwordFile, char *username, char *password, char
             strcmp(password_file, password) == 0)
         {
             // User authenticated
-            sprintf(response, "200 User test granted to access.\n");
+            sprintf(response, "200");
             user_found = 1;
             break;
         }
@@ -345,26 +379,4 @@ void user_command(const char *passwordFile, char *username, char *password, char
     }
 
     fclose(file);
-}
-
-void list_users_command(const char *directory, char *response)
-{
-    // Access the specified directory
-    DIR *dir = opendir(directory);
-    if (!dir)
-    {
-        sprintf(response, "Error opening a directory");
-        exit(EXIT_FAILURE);
-    }
-
-    // Read directory contents
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL)
-    {
-        // Append directory entry names to the response
-        strcat(response, entry->d_name);
-        strcat(response, "\n");
-    }
-
-    closedir(dir);
 }
