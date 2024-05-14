@@ -183,10 +183,17 @@ int main(int argc, char *argv[])
                         struct dirent *entry;
                         while ((entry = readdir(dir)) != NULL)
                         {
+                            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+                            {
+                                continue;
+                            }
+
                             // Append directory entry names to the response
                             strcat(response, entry->d_name);
                             strcat(response, "\n");
                         }
+
+                        strcat(response, "\r\n.\r\n");
 
                         write(fd, response, strlen(response));
                         closedir(dir);
@@ -224,16 +231,20 @@ int main(int argc, char *argv[])
                             }
                             else
                             {
-                                // send the file to the client
+
                                 if (send(fd, file_content, bytes_read, 0) < 0)
                                 {
                                     perror("Error sending the file content. ");
                                     close(fd);
                                     break;
                                 }
-                                else
+                                sprintf(response, "\r\n.\r\n");
+
+                                if (send(fd, response, strlen(response), 0) < 0)
                                 {
-                                    sprintf(response, "\n 200 OK. \n");
+                                    perror("Error sending the response message. ");
+                                    close(fd);
+                                    break;
                                 }
                             }
                         }
@@ -256,66 +267,67 @@ int main(int argc, char *argv[])
                         if (access(file_path, F_OK) == 0)
                         {
                             sprintf(response, "404 File %s already exists\n", file_path);
+                            send(fd, response, strlen(response), 0);
+                            return;
                         }
-                        else
+
+                        FILE *file = fopen(file_path, "wb");
+                        if (file == NULL)
                         {
-                            FILE *file = fopen(file_path, "wb");
-                            if (file == NULL)
+                            perror("Error opening file for writing. ");
+                            return 0;
+                        }
+                        size_t total_bytes_written = 0;
+                        while (1)
+                        {
+
+                            size_t bytes_received = recv(fd, buffer, sizeof(buffer), 0);
+                            if (bytes_received < 0)
                             {
-                                perror("Error opening file for writing. ");
-                                return 0;
-                            }
-
-                            while (1)
-                            {
-                                memset(buffer, 0, sizeof(buffer));
-                                size_t bytes_received = recv(fd, buffer, sizeof(buffer), 0);
-                                if (bytes_received < 0)
-                                {
-                                    perror("Error receving data");
-                                    close(fd);
-                                    fclose(file);
-                                    return 0;
-                                }
-
-                                else if (bytes_received == 0 || strcmp(buffer, ".") == 0)
-                                {
-                                    break;
-                                }
-                                else
-                                {
-                                    size_t bytes_written = fwrite(buffer, 1, bytes_received, file);
-                                    if (bytes_received > bytes_written)
-                                    {
-                                        perror("Error writing a file. ");
-                                        close(fd);
-                                        return 0;
-                                    }
-                                }
-                            }
-
-                            fclose(file);
-
-                            sprintf(response, "File transfer completed. \n");
-                            if (send(fd, response, strlen(response), 0) < 0)
-                            {
-                                perror("Error sending data. ");
+                                perror("Error receving data");
                                 close(fd);
                                 fclose(file);
-                                return 0;
+                                return;
                             }
+
+                            else if (bytes_received >= 5 && strncmp(buffer + bytes_received - 5, "\r\n.\r\n", 5) == 0)
+                            {
+
+                                break;
+                            }
+                            else if (bytes_received > 0)
+                            {
+                                size_t bytes_written = fwrite(buffer, 1, bytes_received, file);
+                                if (bytes_received != bytes_written)
+                                {
+                                    perror("Error writing a file. ");
+                                    fclose(file);
+                                    close(fd);
+                                    return;
+                                }
+                                total_bytes_written += bytes_written;
+                            }
+                        }
+
+                        fclose(file);
+
+                        sprintf(response, "File transfer completed. \n");
+                        if (send(fd, response, strlen(response), 0) < 0)
+                        {
+                            perror("Error sending data. ");
+                            close(fd);
+                            return 0;
                         }
                     }
                     else
                     {
                         strcpy(response, "401 Unauthorized. Please authenticate firs. ");
-                    }
-
-                    if (send(fd, response, strlen(response), 0) < 0)
-                    {
-                        perror("Error sending data");
-                        close(fd);
-                        continue;
+                        if (send(fd, response, strlen(response), 0) < 0)
+                        {
+                            perror("Error sending data");
+                            close(fd);
+                            return;
+                        }
                     }
                 }
                 else if (rcnt == 0)
