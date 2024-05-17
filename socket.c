@@ -15,10 +15,13 @@
 // functions for commands
 void parse_command(char *command, char *username, char *password, char *buffer);
 void user_command(const char *passwordFile, char *username, char *password, char *response);
+void put_command(int fd, const char *initial_buffer, int authenticated);
 
 /* Definitions */
 #define DEFAULT_BUFLEN 512
 #define PORT 4529
+#define END_MARKER "\r\n.\r\n"
+#define FILE_PATH_LENGTH 256
 
 int main(int argc, char *argv[])
 {
@@ -193,14 +196,15 @@ int main(int argc, char *argv[])
                             strcat(response, "\n");
                         }
 
-                        strcat(response, "\r\n.\r\n");
+                        strcat(response, END_MARKER);
 
-                        write(fd, response, strlen(response));
+                        send(fd, response, strlen(response), 0);
                         closedir(dir);
                     }
                     else
                     {
                         strcpy(response, "401 Unauthorized. Please authenticate first. \n");
+                        send(fd, response, strlen(response), 0);
                     }
                 }
                 else if (strcmp(command, "GET") == 0)
@@ -238,7 +242,7 @@ int main(int argc, char *argv[])
                                     close(fd);
                                     break;
                                 }
-                                sprintf(response, "\r\n.\r\n");
+                                sprintf(response, END_MARKER);
 
                                 if (send(fd, response, strlen(response), 0) < 0)
                                 {
@@ -248,87 +252,17 @@ int main(int argc, char *argv[])
                                 }
                             }
                         }
+                        send(fd, response, strlen(response), 0);
                     }
                     else
                     {
                         strcpy(response, "401 Unauthorized. Please authenticate first. \n");
+                        send(fd, response, strlen(response), 0);
                     }
                 }
                 else if (strcmp(command, "PUT") == 0)
                 {
-                    char response[DEFAULT_BUFLEN];
-                    if (authenticated == 1)
-                    {
-                        char file_path[250];
-                        sscanf(buffer, "%*s %s", file_path);
-
-                        // open the specified file for reading
-
-                        if (access(file_path, F_OK) == 0)
-                        {
-                            sprintf(response, "404 File %s already exists\n", file_path);
-                            send(fd, response, strlen(response), 0);
-                            return;
-                        }
-
-                        FILE *file = fopen(file_path, "wb");
-                        if (file == NULL)
-                        {
-                            perror("Error opening file for writing. ");
-                            return 0;
-                        }
-                        size_t total_bytes_written = 0;
-                        while (1)
-                        {
-
-                            size_t bytes_received = recv(fd, buffer, sizeof(buffer), 0);
-                            if (bytes_received < 0)
-                            {
-                                perror("Error receving data");
-                                close(fd);
-                                fclose(file);
-                                return;
-                            }
-
-                            else if (bytes_received >= 5 && strncmp(buffer + bytes_received - 5, "\r\n.\r\n", 5) == 0)
-                            {
-
-                                break;
-                            }
-                            else if (bytes_received > 0)
-                            {
-                                size_t bytes_written = fwrite(buffer, 1, bytes_received, file);
-                                if (bytes_received != bytes_written)
-                                {
-                                    perror("Error writing a file. ");
-                                    fclose(file);
-                                    close(fd);
-                                    return;
-                                }
-                                total_bytes_written += bytes_written;
-                            }
-                        }
-
-                        fclose(file);
-
-                        sprintf(response, "File transfer completed. \n");
-                        if (send(fd, response, strlen(response), 0) < 0)
-                        {
-                            perror("Error sending data. ");
-                            close(fd);
-                            return 0;
-                        }
-                    }
-                    else
-                    {
-                        strcpy(response, "401 Unauthorized. Please authenticate firs. ");
-                        if (send(fd, response, strlen(response), 0) < 0)
-                        {
-                            perror("Error sending data");
-                            close(fd);
-                            return;
-                        }
-                    }
+                    put_command(fd, buffer, authenticated);
                 }
                 else if (rcnt == 0)
                 {
@@ -391,4 +325,159 @@ void user_command(const char *passwordFile, char *username, char *password, char
     }
 
     fclose(file);
+}
+
+void put_command(int fd, const char *initial_buffer, int authenticated)
+{
+    char response[DEFAULT_BUFLEN];
+    if (!authenticated)
+    {
+        strcpy(response, "401 Unauthorized. Please authenticate first. \n");
+        send(fd, response, strlen(response), 0);
+        return;
+    }
+
+    char file_path[FILE_PATH_LENGTH];
+    if (sscanf(initial_buffer, "PUT %s", file_path) != 1)
+    {
+        strcpy(response, "400 Bad Request. Invalid PUT request. \n");
+        send(fd, response, strlen(response), 0);
+        return;
+    }
+
+    FILE *file = fopen(file_path, "wb");
+    if (file == NULL)
+    {
+        perror("Error opening file for writing. ");
+        strcpy(response, "500 Server Error. Failed to open file");
+        send(fd, response, strlen(response), 0);
+        return;
+    }
+
+    size_t total_bytes_written = 0;
+    char data_buffer[DEFAULT_BUFLEN];
+    size_t end_marker_length = strlen(END_MARKER);
+    size_t end_marker_pos = 0;
+    int end_marker_found = 0;
+
+    while (1)
+    {
+        size_t bytes_received = recv(fd, data_buffer, DEFAULT_BUFLEN, 0);
+        if (bytes_received < 0)
+        {
+            perror("Error receiving data");
+            strcpy(response, "500 Internal Server Error. Failed to receive data.\n");
+            send(fd, response, strlen(response), 0);
+            fclose(file);
+            return;
+        }
+        else if (bytes_received == 0)
+        {
+            break;
+        }
+
+        /*char *marker_postion = strstr(data_buffer, END_MARKER);
+
+         // Check if the received data contains the end marker "\r\n.\r\n"
+         if (marker_postion != NULL)
+         {
+             // Calculate the position of the end marker
+             size_t data_length = marker_postion - data_buffer;
+             // Write data up to the end marker to the file
+             size_t bytes_written = fwrite(data_buffer, 1, data_length, file);
+             if (bytes_written != data_length)
+             {
+                 perror("Error writing to file. ");
+                 strcpy(response, "500 Server Failed. Failed to write into file. ");
+                 send(fd, response, strlen(response), 0);
+                 fclose(file);
+                 return;
+             }
+
+             total_bytes_written += bytes_written;
+             break; // End of file transmission
+         }
+         else
+         {
+             // Write received data to the file
+             size_t bytes_written = fwrite(data_buffer, 1, bytes_received, file);
+             if (bytes_written != bytes_received)
+             {
+                 perror("Error writing to file. ");
+                 strcpy(response, "500 Server Failed. Failed to write into file. ");
+                 send(fd, response, strlen(response), 0);
+                 fclose(file);
+                 return;
+             }
+
+             total_bytes_written += bytes_written;
+         }*/
+        for (size_t i = 0; i < bytes_received; i++)
+        {
+            if (data_buffer[i] == END_MARKER[end_marker_pos])
+            {
+                end_marker_pos++;
+                if (end_marker_pos == end_marker_length)
+                {
+                    end_marker_found = 1;
+                    size_t data_length = i + 1 - end_marker_length;
+                    if (data_length > 0)
+                    {
+                        size_t bytes_written = fwrite(data_buffer, 1, data_length, file);
+                        if (bytes_written != data_length)
+                        {
+                            perror("Error writing to file. ");
+                            strcpy(response, "500 Server Error. \n");
+                            send(fd, response, strlen(response), 0);
+                            fclose(file);
+                            return;
+                        }
+                        total_bytes_written += bytes_written;
+                    }
+                    break;
+                }
+            }
+            else
+            {
+                if (end_marker_pos > 0)
+                {
+                    fwrite(END_MARKER, 1, end_marker_pos, file);
+                    total_bytes_written += end_marker_pos;
+                    end_marker_pos = 0;
+                }
+
+                size_t bytes_written = fwrite(data_buffer + i, 1, 1, file);
+                if (bytes_written != 1)
+                {
+                    perror("Error writing to file");
+                    strcpy(response, "500 Server Error. \n");
+                    send(fd, response, strlen(response), 0);
+                    fclose(file);
+                    return;
+                }
+                total_bytes_written += bytes_written;
+            }
+        }
+
+        if (end_marker_found)
+        {
+            break;
+        }
+    }
+
+    fclose(file);
+
+    if (end_marker_found)
+    {
+        sprintf(response, "200 OK. File transfer completed. %zu bytes transferred and saved on the server side.\n", total_bytes_written);
+        if (send(fd, response, strlen(response), 0) < 0)
+        {
+            perror("Error sending response.");
+        }
+    }
+    else
+    {
+        strcpy(response, "400 Bad Request. \n");
+        send(fd, response, strlen(response), 0);
+    }
 }
