@@ -354,130 +354,40 @@ void put_command(int fd, const char *initial_buffer, int authenticated)
         return;
     }
 
-    size_t total_bytes_written = 0;
-    char data_buffer[DEFAULT_BUFLEN];
-    size_t end_marker_length = strlen(END_MARKER);
-    size_t end_marker_pos = 0;
-    int end_marker_found = 0;
+    char buffer[DEFAULT_BUFLEN];
+    int bytes_received;
+    int total_bytes = 0;
 
-    while (1)
+    while ((bytes_received = recv(fd, buffer, sizeof(buffer) - 1, 0)) > 0)
     {
-        size_t bytes_received = recv(fd, data_buffer, DEFAULT_BUFLEN, 0);
-        if (bytes_received < 0)
+        buffer[bytes_received] = '\0';
+
+        if (bytes_received >= 2 && strcmp(buffer + bytes_received - 2, ".\n") == 0 || (bytes_received >= 3 && strcmp(buffer + bytes_received - 3, ".\r\n") == 0))
         {
-            perror("Error receiving data");
-            strcpy(response, "500 Internal Server Error. Failed to receive data.\n");
-            send(fd, response, strlen(response), 0);
-            fclose(file);
-            return;
-        }
-        else if (bytes_received == 0)
-        {
+            bytes_received -= (buffer[bytes_received - 2] == '\r') ? 3 : 2;
+            fwrite(buffer, 1, bytes_received, file);
+            total_bytes += bytes_received;
             break;
         }
 
-        /*char *marker_postion = strstr(data_buffer, END_MARKER);
-
-         // Check if the received data contains the end marker "\r\n.\r\n"
-         if (marker_postion != NULL)
-         {
-             // Calculate the position of the end marker
-             size_t data_length = marker_postion - data_buffer;
-             // Write data up to the end marker to the file
-             size_t bytes_written = fwrite(data_buffer, 1, data_length, file);
-             if (bytes_written != data_length)
-             {
-                 perror("Error writing to file. ");
-                 strcpy(response, "500 Server Failed. Failed to write into file. ");
-                 send(fd, response, strlen(response), 0);
-                 fclose(file);
-                 return;
-             }
-
-             total_bytes_written += bytes_written;
-             break; // End of file transmission
-         }
-         else
-         {
-             // Write received data to the file
-             size_t bytes_written = fwrite(data_buffer, 1, bytes_received, file);
-             if (bytes_written != bytes_received)
-             {
-                 perror("Error writing to file. ");
-                 strcpy(response, "500 Server Failed. Failed to write into file. ");
-                 send(fd, response, strlen(response), 0);
-                 fclose(file);
-                 return;
-             }
-
-             total_bytes_written += bytes_written;
-         }*/
-        for (size_t i = 0; i < bytes_received; i++)
-        {
-            if (data_buffer[i] == END_MARKER[end_marker_pos])
-            {
-                end_marker_pos++;
-                if (end_marker_pos == end_marker_length)
-                {
-                    end_marker_found = 1;
-                    size_t data_length = i + 1 - end_marker_length;
-                    if (data_length > 0)
-                    {
-                        size_t bytes_written = fwrite(data_buffer, 1, data_length, file);
-                        if (bytes_written != data_length)
-                        {
-                            perror("Error writing to file. ");
-                            strcpy(response, "500 Server Error. \n");
-                            send(fd, response, strlen(response), 0);
-                            fclose(file);
-                            return;
-                        }
-                        total_bytes_written += bytes_written;
-                    }
-                    break;
-                }
-            }
-            else
-            {
-                if (end_marker_pos > 0)
-                {
-                    fwrite(END_MARKER, 1, end_marker_pos, file);
-                    total_bytes_written += end_marker_pos;
-                    end_marker_pos = 0;
-                }
-
-                size_t bytes_written = fwrite(data_buffer + i, 1, 1, file);
-                if (bytes_written != 1)
-                {
-                    perror("Error writing to file");
-                    strcpy(response, "500 Server Error. \n");
-                    send(fd, response, strlen(response), 0);
-                    fclose(file);
-                    return;
-                }
-                total_bytes_written += bytes_written;
-            }
-        }
-
-        if (end_marker_found)
-        {
-            break;
-        }
+        fwrite(buffer, 1, bytes_received, file);
+        total_bytes += bytes_received;
     }
 
     fclose(file);
 
-    if (end_marker_found)
+    if (bytes_received < 0)
     {
-        sprintf(response, "200 OK. File transfer completed. %zu bytes transferred and saved on the server side.\n", total_bytes_written);
+
+        strcpy(response, "400 Bad Request. \n");
+        send(fd, response, strlen(response), 0);
+    }
+    else
+    {
+        snprintf(response, sizeof(response), "200 OK. File transfer completed. %zu bytes transferred and saved on the server side.\n", total_bytes);
         if (send(fd, response, strlen(response), 0) < 0)
         {
             perror("Error sending response.");
         }
-    }
-    else
-    {
-        strcpy(response, "400 Bad Request. \n");
-        send(fd, response, strlen(response), 0);
     }
 }
