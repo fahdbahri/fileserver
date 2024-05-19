@@ -6,16 +6,24 @@
 #include <sys/types.h>
 #include <getopt.h>
 #include <unistd.h>
-
+#include <pthread.h>
 /* Socket API headers */
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+// difine a structure to hold the server
+struct server_setting
+{
+    const char *passwordFile;
+    const char *directory;
+};
+
 // functions for commands
 void parse_command(char *command, char *username, char *password, char *buffer);
 void user_command(const char *passwordFile, char *username, char *password, char *response);
 void put_command(int fd, const char *initial_buffer, int authenticated);
+void *handle_connection(void *arg);
 
 /* Definitions */
 #define DEFAULT_BUFLEN 512
@@ -28,7 +36,7 @@ int main(int argc, char *argv[])
     int server, client;
     struct sockaddr_in local_addr;
     struct sockaddr_in remote_addr;
-    int length, fd, rcnt, optval;
+    int length, fd, bytes_read, optval;
     char buffer[DEFAULT_BUFLEN];
     int bufferlen = DEFAULT_BUFLEN;
 
@@ -64,6 +72,8 @@ int main(int argc, char *argv[])
         fprintf(stderr, "usage: %s -d directory_name -p port_number -u password\n", argv[0]);
         exit(EXIT_FAILURE);
     }
+
+    struct server_setting setting = {passwordFile, directory};
 
     /* Open socket descriptor */
     if ((server = socket(AF_INET, SOCK_STREAM, 0)) < 0)
@@ -107,8 +117,6 @@ int main(int argc, char *argv[])
 
     printf("Wait for connection\n");
 
-    int authenticated = 0; // Flag to track user authentication
-
     while (1)
     {
         // Accept incoming connection
@@ -124,161 +132,19 @@ int main(int argc, char *argv[])
 
         // Receive until the peer shuts down the connection
 
-        // Clear Receive buffer
-
-        do
+        // create a new thread
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, handle_connection, (void *)&fd) != 0)
         {
-            memset(&buffer, '\0', sizeof(buffer));
-            rcnt = recv(fd, buffer, bufferlen, 0);
-            if (rcnt > 0)
-            {
-                // Parse the received command
-                char command[100];
-                char username[100];
-                char password[100];
-                memset(command, 0, sizeof(command));
-                memset(username, 0, sizeof(username));
-                memset(password, 0, sizeof(password));
-                parse_command(command, username, password, buffer);
-
-                char response[DEFAULT_BUFLEN];
-                memset(response, 0, sizeof(response));
-
-                // Handle different commaands
-                if (strcmp(command, "USER") == 0)
-                {
-                    // Handle USER command
-                    user_command(passwordFile, username, password, response);
-                    if (strcmp(response, "200") == 0)
-                    {
-                        authenticated = 1;
-                        if (send(fd, "200 User test granted to access.\n", strlen("200 User test granted to access.\n"), 0) < 0)
-                        {
-                            perror("Error sending data");
-                            close(fd);
-                            continue;
-                        }
-                    }
-                    else
-                    {
-                        if (send(fd, "401 Unauthorized. Please authenticate first. \n", strlen("401 Unauthorized. Please authenticate first. \n"), 0) < 0)
-                        {
-                            perror("Error sending data");
-                            close(fd);
-                            continue;
-                        }
-                    }
-                }
-                else if (strcmp(command, "LIST") == 0)
-                {
-                    // Handle LIST command
-                    if (authenticated == 1)
-                    {
-                        // Access the specified directory
-                        DIR *dir = opendir(directory);
-                        if (!dir)
-                        {
-                            sprintf(response, "Error opening a directory");
-                            return;
-                        }
-
-                        // Read directory contents
-                        struct dirent *entry;
-                        while ((entry = readdir(dir)) != NULL)
-                        {
-                            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-                            {
-                                continue;
-                            }
-
-                            // Append directory entry names to the response
-                            strcat(response, entry->d_name);
-                            strcat(response, "\n");
-                        }
-
-                        strcat(response, END_MARKER);
-
-                        send(fd, response, strlen(response), 0);
-                        closedir(dir);
-                    }
-                    else
-                    {
-                        strcpy(response, "401 Unauthorized. Please authenticate first. \n");
-                        send(fd, response, strlen(response), 0);
-                    }
-                }
-                else if (strcmp(command, "GET") == 0)
-                {
-                    // handle GET command
-                    if (authenticated == 1)
-                    {
-
-                        char file_path[250];
-                        sscanf(buffer, "%*s %s", file_path);
-
-                        // open the specified file for reading
-                        FILE *file = fopen(file_path, "r");
-                        if (file == NULL)
-                        {
-                            sprintf(response, "404 File %s not found\n", file_path);
-                        }
-                        else
-                        {
-                            // reading the file content
-                            char file_content[DEFAULT_BUFLEN];
-                            size_t bytes_read = fread(file_content, 1, sizeof(file_content), file);
-                            fclose(file);
-
-                            if (bytes_read == 0)
-                            {
-                                sprintf(response, "500 Internal server error. \n");
-                            }
-                            else
-                            {
-
-                                if (send(fd, file_content, bytes_read, 0) < 0)
-                                {
-                                    perror("Error sending the file content. ");
-                                    close(fd);
-                                    break;
-                                }
-                                sprintf(response, END_MARKER);
-
-                                if (send(fd, response, strlen(response), 0) < 0)
-                                {
-                                    perror("Error sending the response message. ");
-                                    close(fd);
-                                    break;
-                                }
-                            }
-                        }
-                        send(fd, response, strlen(response), 0);
-                    }
-                    else
-                    {
-                        strcpy(response, "401 Unauthorized. Please authenticate first. \n");
-                        send(fd, response, strlen(response), 0);
-                    }
-                }
-                else if (strcmp(command, "PUT") == 0)
-                {
-                    put_command(fd, buffer, authenticated);
-                }
-                else if (rcnt == 0)
-                {
-                    printf("Connection closing...\n");
-                }
-            }
-            else
-            {
-                printf("Receive failed:\n");
-                close(fd);
-                break;
-            }
-        } while (rcnt > 0);
+            perror("Thread creation");
+        }
+        else
+        {
+            pthread_detach(tid);
+        }
     }
-
     close(server);
+    return 0;
 }
 void parse_command(char *command, char *username, char *password, char *buffer)
 {
@@ -314,7 +180,7 @@ void user_command(const char *passwordFile, char *username, char *password, char
             // User authenticated
             sprintf(response, "200");
             user_found = 1;
-            break;
+            pthread_exit(NULL);
         }
     }
 
@@ -356,7 +222,7 @@ void put_command(int fd, const char *initial_buffer, int authenticated)
 
     char buffer[DEFAULT_BUFLEN];
     int bytes_received;
-    int total_bytes = 0;
+    size_t total_bytes = 0;
 
     while ((bytes_received = recv(fd, buffer, sizeof(buffer) - 1, 0)) > 0)
     {
@@ -367,7 +233,7 @@ void put_command(int fd, const char *initial_buffer, int authenticated)
             bytes_received -= (buffer[bytes_received - 2] == '\r') ? 3 : 2;
             fwrite(buffer, 1, bytes_received, file);
             total_bytes += bytes_received;
-            break;
+            pthread_exit(NULL);
         }
 
         fwrite(buffer, 1, bytes_received, file);
@@ -390,4 +256,230 @@ void put_command(int fd, const char *initial_buffer, int authenticated)
             perror("Error sending response.");
         }
     }
+}
+
+void *handle_connection(void *arg)
+{
+    char buffer[DEFAULT_BUFLEN];
+    int bytes_read;
+    int fd = *(int *)arg;
+
+    struct server_setting *setting = (struct server_setting *)arg;
+    const char *passwordFile = setting->passwordFile;
+    const char *directory = setting->directory;
+
+    // sending the welcome message
+    char welcome[] = "Welcome to Bob's file server\n";
+    // testing
+    if (send(fd, welcome, strlen(welcome), 0) < 0)
+    {
+        perror("Error sending the welcome message");
+        close(fd);
+        pthread_exit(NULL);
+    }
+
+    int authenticated = 0; // Flag to track user authentication
+
+    while (1)
+    {
+        // Accept incoming connection
+
+        // Clear Receive buffer
+
+        memset(&buffer, '\0', sizeof(buffer));
+        bytes_read = recv(fd, buffer, sizeof(buffer), 0);
+        if (bytes_read > 0)
+        {
+            // Parse the received command
+            char command[100];
+            char username[100];
+            char password[100];
+            memset(command, 0, sizeof(command));
+            memset(username, 0, sizeof(username));
+            memset(password, 0, sizeof(password));
+            parse_command(command, username, password, buffer);
+
+            char response[DEFAULT_BUFLEN];
+            memset(response, 0, sizeof(response));
+
+            // Handle different commaands
+            if (strcmp(command, "USER") == 0)
+            {
+                // Handle USER command
+                user_command(passwordFile, username, password, response);
+                if (strcmp(response, "200") == 0)
+                {
+                    authenticated = 1;
+                    if (send(fd, "200 User test granted to access.\n", strlen("200 User test granted to access.\n"), 0) < 0)
+                    {
+                        perror("Error sending data");
+                        close(fd);
+                        pthread_exit(NULL);
+                    }
+                }
+                else
+                {
+                    if (send(fd, "401 Unauthorized. Please authenticate first. \n", strlen("401 Unauthorized. Please authenticate first. \n"), 0) < 0)
+                    {
+                        perror("Error sending data");
+                        close(fd);
+                        pthread_exit(NULL);
+                    }
+                }
+            }
+            else if (strcmp(command, "LIST") == 0)
+            {
+                // Handle LIST command
+                if (authenticated == 1)
+                {
+                    // Access the specified directory
+                    DIR *dir = opendir(directory);
+                    if (!dir)
+                    {
+                        sprintf(response, "Error opening a directory");
+                        send(fd, response, strlen(response), 0);
+                        continue;
+                    }
+
+                    // Read directory contents
+                    struct dirent *entry;
+                    while ((entry = readdir(dir)) != NULL)
+                    {
+                        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+                        {
+                            continue;
+                        }
+
+                        // Append directory entry names to the response
+                        strcat(response, entry->d_name);
+                        strcat(response, "\n");
+                    }
+
+                    strcat(response, END_MARKER);
+
+                    send(fd, response, strlen(response), 0);
+                    closedir(dir);
+                }
+                else
+                {
+                    strcpy(response, "401 Unauthorized. Please authenticate first. \n");
+                    send(fd, response, strlen(response), 0);
+                }
+            }
+            else if (strcmp(command, "GET") == 0)
+            {
+                // handle GET command
+                if (authenticated == 1)
+                {
+
+                    char file_path[250];
+                    sscanf(buffer, "%*s %s", file_path);
+
+                    // open the specified file for reading
+                    FILE *file = fopen(file_path, "r");
+                    if (file == NULL)
+                    {
+                        sprintf(response, "404 File %s not found\n", file_path);
+                    }
+                    else
+                    {
+                        // reading the file content
+                        char file_content[DEFAULT_BUFLEN];
+                        size_t bytes_read = fread(file_content, 1, sizeof(file_content), file);
+                        fclose(file);
+
+                        if (bytes_read == 0)
+                        {
+                            sprintf(response, "500 Internal server error. \n");
+                        }
+                        else
+                        {
+
+                            if (send(fd, file_content, bytes_read, 0) < 0)
+                            {
+                                perror("Error sending the file content. ");
+                                close(fd);
+                                pthread_exit(NULL);
+                            }
+                            sprintf(response, END_MARKER);
+
+                            if (send(fd, response, strlen(response), 0) < 0)
+                            {
+                                perror("Error sending the response message. ");
+                                close(fd);
+                                pthread_exit(NULL);
+                            }
+                        }
+                    }
+                    send(fd, response, strlen(response), 0);
+                }
+                else
+                {
+                    strcpy(response, "401 Unauthorized. Please authenticate first. \n");
+                    send(fd, response, strlen(response), 0);
+                }
+            }
+            else if (strcmp(command, "PUT") == 0)
+            {
+                put_command(fd, buffer, authenticated);
+            }
+            else if (strcmp(command, "DEL") == 0)
+            {
+                if (authenticated)
+                {
+                    char file_path[250];
+                    sscanf(buffer, "%*s %s", file_path);
+
+                    if (access(file_path, F_OK) == 0)
+                    {
+                        if (remove(file_path) == 0)
+                        {
+                            sprintf(response, "200 File %s Deleted. \n", file_path);
+                        }
+                        else
+                        {
+
+                            sprintf(response, "500 Server error. \n");
+                        }
+                    }
+                    else
+                    {
+                        sprintf(response, "404 File %s not found. \n", file_path);
+                    }
+                    send(fd, response, strlen(response), 0);
+                }
+                else
+                {
+                    strcpy(response, "401 Unauthorized. Please authenticate first. \n");
+                    send(fd, response, strlen(response), 0);
+                }
+            }
+            else if (strcmp(command, "QUIT") == 0)
+            {
+                strcpy(response, "GoodBye!\n");
+                send(fd, response, strlen(response), 0);
+                pthread_exit(NULL);
+            }
+            else
+            {
+                printf("An invalid FTP command \n");
+            }
+        }
+
+        else if (bytes_read == 0)
+        {
+            printf("Connection closing...\n");
+            pthread_exit(NULL);
+        }
+
+        else
+        {
+            printf("Receive failed:\n");
+            close(fd);
+            pthread_exit(NULL);
+        }
+    }
+
+    close(fd);
+    pthread_exit(NULL);
 }
