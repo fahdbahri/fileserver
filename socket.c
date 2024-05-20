@@ -13,10 +13,17 @@
 #include <arpa/inet.h>
 
 // difine a structure to hold the server
+
 struct server_setting
 {
     const char *passwordFile;
     const char *directory;
+};
+
+struct client_info
+{
+    int fd;
+    struct server_setting setting;
 };
 
 // functions for commands
@@ -120,8 +127,9 @@ int main(int argc, char *argv[])
     while (1)
     {
         // Accept incoming connection
-        length = sizeof remote_addr;
-        if ((fd = accept(server, (struct sockaddr *)&remote_addr, &length)) == -1)
+        length = sizeof(remote_addr);
+        fd = accept(server, (struct sockaddr *)&remote_addr, &length);
+        if (fd == -1)
         {
             perror("Accept Problem!");
             continue;
@@ -134,9 +142,19 @@ int main(int argc, char *argv[])
 
         // create a new thread
         pthread_t tid;
-        if (pthread_create(&tid, NULL, handle_connection, (void *)&fd) != 0)
+        struct client_info *c_info = malloc(sizeof(struct client_info));
+        c_info->fd = fd;
+        c_info->setting.directory = strdup(directory);
+        c_info->setting.passwordFile = strdup(passwordFile);
+        if (pthread_create(&tid, NULL, handle_connection, c_info) != 0)
         {
             perror("Thread creation");
+            close(fd);
+            free(c_info->setting.passwordFile);
+            free(c_info->setting.directory);
+            free(c_info);
+
+            continue;
         }
         else
         {
@@ -165,7 +183,8 @@ void user_command(const char *passwordFile, char *username, char *password, char
     {
         // handle the file error
         sprintf(response, "The file is not opened.\n");
-        exit(0);
+        fclose(file);
+        return;
     }
 
     // Read lines from the password file
@@ -180,7 +199,7 @@ void user_command(const char *passwordFile, char *username, char *password, char
             // User authenticated
             sprintf(response, "200");
             user_found = 1;
-            pthread_exit(NULL);
+            break;
         }
     }
 
@@ -262,11 +281,11 @@ void *handle_connection(void *arg)
 {
     char buffer[DEFAULT_BUFLEN];
     int bytes_read;
-    int fd = *(int *)arg;
 
-    struct server_setting *setting = (struct server_setting *)arg;
-    const char *passwordFile = setting->passwordFile;
-    const char *directory = setting->directory;
+    struct client_info *c_info = (struct client_info *)arg;
+    int fd = c_info->fd;
+    const char *passwordFile = c_info->setting.passwordFile;
+    const char *directory = c_info->setting.directory;
 
     // sending the welcome message
     char welcome[] = "Welcome to Bob's file server\n";
@@ -275,10 +294,15 @@ void *handle_connection(void *arg)
     {
         perror("Error sending the welcome message");
         close(fd);
+        free(c_info->setting.passwordFile);
+        free(c_info->setting.directory);
+        free(c_info);
+
         pthread_exit(NULL);
     }
 
     int authenticated = 0; // Flag to track user authentication
+    int failed_attempts = 0;
 
     while (1)
     {
@@ -310,19 +334,23 @@ void *handle_connection(void *arg)
                 if (strcmp(response, "200") == 0)
                 {
                     authenticated = 1;
-                    if (send(fd, "200 User test granted to access.\n", strlen("200 User test granted to access.\n"), 0) < 0)
-                    {
-                        perror("Error sending data");
-                        close(fd);
-                        pthread_exit(NULL);
-                    }
+                    strcpy(response, "200 User test granted to access.\n");
+
+                    send(fd, response, strlen(response), 0);
                 }
                 else
                 {
-                    if (send(fd, "401 Unauthorized. Please authenticate first. \n", strlen("401 Unauthorized. Please authenticate first. \n"), 0) < 0)
+                    failed_attempts++;
+                    send(fd, response, strlen(response), 0);
+                    if (failed_attempts >= 3)
                     {
-                        perror("Error sending data");
+                        strcpy(response, "403 Forbidden. Too many attempts. \n");
+                        send(fd, response, strlen(response), 0);
                         close(fd);
+                        free(c_info->setting.passwordFile);
+                        free(c_info->setting.directory);
+                        free(c_info);
+
                         pthread_exit(NULL);
                     }
                 }
@@ -407,6 +435,10 @@ void *handle_connection(void *arg)
                             {
                                 perror("Error sending the response message. ");
                                 close(fd);
+                                free(c_info->setting.passwordFile);
+                                free(c_info->setting.directory);
+                                free(c_info);
+
                                 pthread_exit(NULL);
                             }
                         }
@@ -458,6 +490,11 @@ void *handle_connection(void *arg)
             {
                 strcpy(response, "GoodBye!\n");
                 send(fd, response, strlen(response), 0);
+                close(fd);
+                free(c_info->setting.passwordFile);
+                free(c_info->setting.directory);
+                free(c_info);
+
                 pthread_exit(NULL);
             }
             else
@@ -469,17 +506,30 @@ void *handle_connection(void *arg)
         else if (bytes_read == 0)
         {
             printf("Connection closing...\n");
+            close(fd);
+            free(c_info->setting.passwordFile);
+            free(c_info->setting.directory);
+            free(c_info);
+
             pthread_exit(NULL);
         }
 
-        else
+        else if (bytes_read < 0)
         {
             printf("Receive failed:\n");
             close(fd);
+            free(c_info->setting.passwordFile);
+            free(c_info->setting.directory);
+            free(c_info);
+
             pthread_exit(NULL);
         }
     }
 
     close(fd);
+    free(c_info->setting.passwordFile);
+    free(c_info->setting.directory);
+    free(c_info);
+
     pthread_exit(NULL);
 }
