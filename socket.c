@@ -12,12 +12,18 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+/* Definitions */
+#define DEFAULT_BUFLEN 512
+#define PORT 4529
+#define END_MARKER "\r\n.\r\n"
+#define FILE_PATH_LENGTH 256
+
 // difine a structure to hold the server
 
 struct server_setting
 {
-    const char *passwordFile;
-    const char *directory;
+    char *passwordFile;
+    char *directory;
 };
 
 struct client_info
@@ -31,12 +37,6 @@ void parse_command(char *command, char *username, char *password, char *buffer);
 void user_command(const char *passwordFile, char *username, char *password, char *response);
 void put_command(int fd, const char *initial_buffer, int authenticated);
 void *handle_connection(void *arg);
-
-/* Definitions */
-#define DEFAULT_BUFLEN 512
-#define PORT 4529
-#define END_MARKER "\r\n.\r\n"
-#define FILE_PATH_LENGTH 256
 
 int main(int argc, char *argv[])
 {
@@ -80,7 +80,7 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    struct server_setting setting = {passwordFile, directory};
+    struct server_setting setting = {strdup(passwordFile), strdup(directory)};
 
     /* Open socket descriptor */
     if ((server = socket(AF_INET, SOCK_STREAM, 0)) < 0)
@@ -247,12 +247,12 @@ void put_command(int fd, const char *initial_buffer, int authenticated)
     {
         buffer[bytes_received] = '\0';
 
-        if (bytes_received >= 2 && strcmp(buffer + bytes_received - 2, ".\n") == 0 || (bytes_received >= 3 && strcmp(buffer + bytes_received - 3, ".\r\n") == 0))
+        if (bytes_received >= 2 && strcmp(buffer + bytes_received - 2, ".\n") == 0)
         {
-            bytes_received -= (buffer[bytes_received - 2] == '\r') ? 3 : 2;
+            bytes_received -= 2;
             fwrite(buffer, 1, bytes_received, file);
             total_bytes += bytes_received;
-            pthread_exit(NULL);
+            break;
         }
 
         fwrite(buffer, 1, bytes_received, file);
@@ -284,8 +284,8 @@ void *handle_connection(void *arg)
 
     struct client_info *c_info = (struct client_info *)arg;
     int fd = c_info->fd;
-    const char *passwordFile = c_info->setting.passwordFile;
-    const char *directory = c_info->setting.directory;
+    char *passwordFile = c_info->setting.passwordFile;
+    char *directory = c_info->setting.directory;
 
     // sending the welcome message
     char welcome[] = "Welcome to Bob's file server\n";
