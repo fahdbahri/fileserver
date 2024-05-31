@@ -314,7 +314,7 @@ void *handle_connection(void *arg)
         bytes_read = recv(fd, buffer, sizeof(buffer), 0);
         if (bytes_read > 0)
         {
-            // Parse the received command
+            // Parse the received command for testing purposes in the server side
             char command[100];
             char username[100];
             char password[100];
@@ -488,14 +488,9 @@ void *handle_connection(void *arg)
             }
             else if (strcmp(command, "QUIT") == 0)
             {
-                strcpy(response, "GoodBye!\n");
+                strcpy(response, "GoodBye!, press any key to close...\n");
                 send(fd, response, strlen(response), 0);
-                close(fd);
-                free(c_info->setting.passwordFile);
-                free(c_info->setting.directory);
-                free(c_info);
-
-                pthread_exit(NULL);
+                break;
             }
             else
             {
@@ -506,23 +501,13 @@ void *handle_connection(void *arg)
         else if (bytes_read == 0)
         {
             printf("Connection closing...\n");
-            close(fd);
-            free(c_info->setting.passwordFile);
-            free(c_info->setting.directory);
-            free(c_info);
-
-            pthread_exit(NULL);
+            break;
         }
 
         else if (bytes_read < 0)
         {
             printf("Receive failed:\n");
-            close(fd);
-            free(c_info->setting.passwordFile);
-            free(c_info->setting.directory);
-            free(c_info);
-
-            pthread_exit(NULL);
+            break;
         }
     }
 
