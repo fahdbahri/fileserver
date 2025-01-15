@@ -1,4 +1,4 @@
-# Simple File Server
+# File Server
 This repository contains a simple file server written in C. The server supports basic file operations and requires user authentication.
 
 ## Features
