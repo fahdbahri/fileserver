@@ -1,5 +1,5 @@
 # File Server
-This repository contains a simple file server written in C. The server supports basic file operations and requires user authentication.
+This repository contains file server written in C. The server supports basic file operations and requires user authentication.
 
 ## Features
 **Authentication**: Users must authenticate with a username and password.
